@@ -32,7 +32,7 @@
  * MIT license, all text here must be included in any redistribution.
  *
  */
- 
+/*
 #include <Wire.h>
 #include "Adafruit_MPRLS.h"
 
@@ -40,6 +40,7 @@
 #define RESET_PIN  -1  // set to any GPIO pin # to hard-reset on begin()
 #define EOC_PIN    -1  // set to any GPIO pin to read end-of-conversion by pin
 Adafruit_MPRLS mpr = Adafruit_MPRLS(RESET_PIN, EOC_PIN);
+*/
 
 
 /***************************************************************************
@@ -133,7 +134,8 @@ unsigned long lastEEPROMRecordUpdateMs = currentTime;
 
 float f; // temp float to use EEPROM.get
 
-const String dataFileName = "data9.txt";
+// LAUNCH: change this to a new file, make sure filename is very short
+const String dataFileName = "yeet.txt";
 
 /*
  * TODO: fix setup so it will continue even if not all the sensors are initialized
@@ -146,15 +148,19 @@ bool anyFailures = false;
 
 /*
  * Buzzer and Button stuff
+ * Parameters for LAUNCH:
+ * disableBuzzer = false;
+ * beginLocationBuzzerMs = 3600000;
+ * timeBetweenLocationBuzzerMs = 20*1000;
  */
+bool disableBuzzer = false;
 const int buttonPin = 8;
 bool buttonState = 0;
 const int buzzerPin = 6;
 bool enableLocationBuzzer = 0;
 bool disableLocationBuzzer = 0;
-unsigned long enableLocationBuzzerMs = 0;
-unsigned long beginLocationBuzzerMs = 20*1000;
-unsigned int timeBetweenLocationBuzzerMs = 2*1000;
+unsigned long beginLocationBuzzerMs = 3600000;  // you need to type 3600000 because arduino IDE is ;(
+unsigned int timeBetweenLocationBuzzerMs = 10*1000;
 unsigned long lastLocationBuzzerMs = currentTime;
 unsigned int timeBetweenStandbyBuzzerMs = 10*1000;
 unsigned long lastStandbyBuzzerMs = currentTime;
@@ -183,6 +189,10 @@ void resetEEPROM() {
   EEPROM.get(lowestTemperatureBMPEEPROMAddress, f);
   Serial.println(f);
   EEPROM.put(lowestTemperatureBMPEEPROMAddress, (float)0);
+
+  // happy chirp
+  buzzerChirp(buzzerPin, 200, 200, 4000);
+  delay(5*1000);
 }
 
 void updateEEPROMRecords() {
@@ -247,7 +257,9 @@ void buzzerChirp(int buzzerPin, int duration, int startFreq, int endFreq) {
   int freq = startFreq;
 
   for (int i = 0; i < num; i++) {
-    //tone(buzzerPin, freq);
+    if (!disableBuzzer) {
+      tone(buzzerPin, freq);
+    }
     lastTime = micros()/1000;
     while (micros()/1000 < lastTime + delayIncrement) {
       delay(10);
@@ -286,16 +298,29 @@ void doErrorBuzzer() {
 }
 
 void doLocationBuzzer() {
-  if (!disableLocationBuzzer && currentTime > lastLocationBuzzerMs + timeBetweenLocationBuzzerMs) {
-    buzzerChirp(buzzerPin, 1000, 200, 2000);
-    buzzerChirp(buzzerPin, 1000, 2000, 200);
-    Serial.println("LOCATION (buzzer)");
-    lastLocationBuzzerMs = currentTime;
+  if (!disableLocationBuzzer) {
+    if (currentTime > lastLocationBuzzerMs + timeBetweenLocationBuzzerMs) {
+      buzzerChirp(buzzerPin, 500, 200, 2000);
+      tone(buzzerPin, 2000);
+      delay(1000);
+      //buzzerChirp(buzzerPin, 1000, 2000, 2000);
+      buzzerChirp(buzzerPin, 500, 2000, 200);
+      Serial.println("LOCATION (buzzer)");
+      lastLocationBuzzerMs = currentTime;
+    }
+  } else {
+    Serial.println("LOCATION BUZZER DISABLED");
   }
 }
 
 void doBuzzer() {
-  if (currentTime > enableLocationBuzzerMs) {
+  Serial.print(currentTime);
+    Serial.print(" ");
+    Serial.print(beginLocationBuzzerMs);
+    Serial.print(" ");
+    Serial.println(currentTime > beginLocationBuzzerMs);
+  if (currentTime > beginLocationBuzzerMs) {
+    
     enableLocationBuzzer = true;
   }
   
@@ -406,15 +431,13 @@ void loop() {
     anyFailures = true;
   }
 
-  anyFailures = true;
+  // update button state
+  buttonState = digitalRead(buttonPin);
 
   if (buttonState) {
     Serial.println("button pressed");
     disableLocationBuzzer = 1;
   }
-
-  // update button state
-  buttonState = digitalRead(buttonPin);
 
   doBuzzer();
 }
