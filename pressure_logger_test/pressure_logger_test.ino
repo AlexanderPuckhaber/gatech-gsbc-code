@@ -1,8 +1,16 @@
+#include <EEPROM.h>
+
 /*
  * This code is currently a combination of three example programs, links are in the comments below
  * The sensors are: MPRLS Pressure sensor, BMP280 Pressure and Temperature sensor, and SD card breakout
  */
 
+/*
+ * WIRING for Arduino Nano:
+ * A4: SDA
+ * A5: SCL
+ * 
+ */
 
 /*!
  * @file mprls_simpletest.ino
@@ -56,14 +64,14 @@ Adafruit_MPRLS mpr = Adafruit_MPRLS(RESET_PIN, EOC_PIN);
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP280.h>
 
-#define BMP_SCK 13
-#define BMP_MISO 12
-#define BMP_MOSI 11 
-#define BMP_CS 10
+#define BMP_SCK 5
+#define BMP_MISO 4
+#define BMP_MOSI 3 
+#define BMP_CS 2
 
-Adafruit_BMP280 bme; // I2C
+//Adafruit_BMP280 bme; // I2C (I fried the I2C oops)
 //Adafruit_BMP280 bme(BMP_CS); // hardware SPI
-//Adafruit_BMP280 bme(BMP_CS, BMP_MOSI, BMP_MISO,  BMP_SCK);
+Adafruit_BMP280 bme(BMP_CS, BMP_MOSI, BMP_MISO,  BMP_SCK); // software SPI 
 
 /*
   SD card datalogger
@@ -98,33 +106,238 @@ const int chipSelect = 10;
  * Timekeeping without a real-time-clock
  * units in microseconds
  */
-unsigned long currentTime = 0;
-unsigned long lastTime = 0;
+unsigned long startTime;
+unsigned long currentTime;
+unsigned long lastTime;
+int lastTimeEEPROMAddress = 16;
 
-const String dataFileName = "data8.txt";
+/*
+ * Floats to hold sensor data
+ */
+float pressureMPRLS = 0;
+float pressureBMP = 0;
+float temperatureBMP = 0;
+
+/*
+ * Keep lowest pressure, temperature from sensors
+ */
+float lowestPressureMPRLS = 100000;
+int lowestPressureMPRLSEEPROMAddress = 48;
+float lowestPressureBMP = 100000;
+int lowestPressureBMPEEPROMAddress = 48+32;
+float lowestTemperatureBMP = 100;
+int lowestTemperatureBMPEEPROMAddress = 48+32+32;
+
+unsigned int timeBetweenEEPROMRecordUpdatesMs = 120*1000; //Every 2 minutes to preserve EEPROM life
+unsigned long lastEEPROMRecordUpdateMs = currentTime;
+
+float f; // temp float to use EEPROM.get
+
+const String dataFileName = "data9.txt";
 
 /*
  * TODO: fix setup so it will continue even if not all the sensors are initialized
  * We can even have it write simple max altitude data to the onboard EEPROM if the sd card isn't found
  */
+
+bool anyFailures = false;
+//unsigned int timeBetweenSetupAttemptsMs = 480*1000; //Every 4 minutes
+//unsigned long lastSetupAttemptMs = currentTime;
+
+/*
+ * Buzzer and Button stuff
+ */
+const int buttonPin = 8;
+bool buttonState = 0;
+const int buzzerPin = 6;
+bool enableLocationBuzzer = 0;
+bool disableLocationBuzzer = 0;
+unsigned long enableLocationBuzzerMs = 0;
+unsigned long beginLocationBuzzerMs = 20*1000;
+unsigned int timeBetweenLocationBuzzerMs = 2*1000;
+unsigned long lastLocationBuzzerMs = currentTime;
+unsigned int timeBetweenStandbyBuzzerMs = 10*1000;
+unsigned long lastStandbyBuzzerMs = currentTime;
+unsigned int timeBetweenErrorBuzzerMs = 6*1000;
+unsigned long lastErrorBuzzerMs = currentTime;
+
+/*
+ * Timing stuff
+ */
+ 
+/*
+ * EEPROM Stuff
+ */
+
+void resetEEPROM() {
+  unsigned long templong;
+  EEPROM.get(lastTimeEEPROMAddress, templong);
+  Serial.println(templong);
+  EEPROM.put(lastTimeEEPROMAddress, (unsigned long)0);
+  EEPROM.get(lowestPressureMPRLSEEPROMAddress, f);
+  Serial.println(f);
+  EEPROM.put(lowestPressureMPRLSEEPROMAddress, (float)0);
+  EEPROM.get(lowestPressureBMPEEPROMAddress, f);
+  Serial.println(f);
+  EEPROM.put(lowestPressureBMPEEPROMAddress, (float)0);
+  EEPROM.get(lowestTemperatureBMPEEPROMAddress, f);
+  Serial.println(f);
+  EEPROM.put(lowestTemperatureBMPEEPROMAddress, (float)0);
+}
+
+void updateEEPROMRecords() {
+  if (currentTime > lastEEPROMRecordUpdateMs + timeBetweenEEPROMRecordUpdatesMs) {
+    Serial.println("updating records in EEPROM");
+    EEPROM.put(lastTimeEEPROMAddress, currentTime);
+    Serial.print("saving new time: ");
+    Serial.print(currentTime);
+    Serial.print(" should match ");
+    unsigned long templong;
+    EEPROM.get(lastTimeEEPROMAddress, templong);
+    Serial.println(templong);
+
+    EEPROM.put(lowestPressureMPRLSEEPROMAddress, lowestPressureMPRLS);
+    EEPROM.put(lowestPressureBMPEEPROMAddress, lowestPressureBMP);
+    Serial.print("new lowest pressure: ");
+    Serial.print(lowestPressureBMP);
+    Serial.print(" should match: ");
+    EEPROM.get(lowestPressureBMPEEPROMAddress, f);
+    Serial.println(f);
+    
+    EEPROM.put(lowestTemperatureBMPEEPROMAddress, lowestTemperatureBMP);
+
+    lastEEPROMRecordUpdateMs = currentTime;
+  }
+}
+
+void updateLowest() {
+  if (pressureMPRLS < lowestPressureMPRLS) {
+    lowestPressureMPRLS = pressureMPRLS;
+  }
+  if (pressureBMP < lowestPressureBMP) {
+    lowestPressureBMP = pressureBMP;
+  }
+  if (temperatureBMP < lowestTemperatureBMP) {
+    lowestTemperatureBMP = temperatureBMP;
+  }
+}
+
+void buzzerChirp(int buzzerPin, int duration, int startFreq, int endFreq) {
+  Serial.print("chirping for: ");
+  Serial.print(duration);
+  Serial.println(" ms");
+  
+  int start = startFreq;
+  int end = endFreq;
+
+  int num = end - start + 1;
+  int mult = 1;
+  if (num < 0) {
+    mult = -1;
+    num *= mult;
+  }
+
+  double delayIncrement = duration/(double)(num);
+  //Serial.print("delay increment: ");
+  //Serial.println(delayIncrement);
+
+  unsigned long startTime = micros()/1000;
+  unsigned long lastTime = micros()/1000;
+
+  int freq = startFreq;
+
+  for (int i = 0; i < num; i++) {
+    //tone(buzzerPin, freq);
+    lastTime = micros()/1000;
+    while (micros()/1000 < lastTime + delayIncrement) {
+      delay(10);
+      
+      //Serial.println(lastTime);
+    }
+
+    double actualDelay = micros()/1000 - lastTime;
+    i+= actualDelay/delayIncrement;
+
+    if (mult > 0) {
+      freq = (int)(startFreq + (int)(i));
+    } else {
+      freq = (int)(startFreq - (int)(i));
+    }
+    //Serial.println(freq);
+  }
+  noTone(buzzerPin); //stop sound
+  
+}
+
+void doStandbyBuzzer() {
+  if (currentTime > lastStandbyBuzzerMs + timeBetweenStandbyBuzzerMs) {
+    buzzerChirp(buzzerPin, 50, 1500, 2000);
+    Serial.println("STANDBY (buzzer)");
+    lastStandbyBuzzerMs = currentTime;
+  }
+}
+
+void doErrorBuzzer() {
+  if (currentTime > lastErrorBuzzerMs + timeBetweenErrorBuzzerMs) {
+    buzzerChirp(buzzerPin, 200, 50, 50);
+    Serial.println("ERROR (buzzer)");
+    lastErrorBuzzerMs = currentTime;
+  }
+}
+
+void doLocationBuzzer() {
+  if (!disableLocationBuzzer && currentTime > lastLocationBuzzerMs + timeBetweenLocationBuzzerMs) {
+    buzzerChirp(buzzerPin, 1000, 200, 2000);
+    buzzerChirp(buzzerPin, 1000, 2000, 200);
+    Serial.println("LOCATION (buzzer)");
+    lastLocationBuzzerMs = currentTime;
+  }
+}
+
+void doBuzzer() {
+  if (currentTime > enableLocationBuzzerMs) {
+    enableLocationBuzzer = true;
+  }
+  
+  if (enableLocationBuzzer) {
+    doLocationBuzzer();
+  } else if (anyFailures) {
+    doErrorBuzzer();
+  } else {
+    doStandbyBuzzer();
+  }
+}
+
 void setup() {
   Serial.begin(115200);
+  
+  pinMode(buttonPin, INPUT);
+  // check for reset
+  buttonState = digitalRead(buttonPin);
+  if (buttonState) {
+    // reset
+    Serial.println("last EEPROM data:");
+    resetEEPROM();
+  }
+
+  anyFailures = false;
+
+  EEPROM.get(lastTimeEEPROMAddress, startTime);
+
+  /*
   Serial.println("MPRLS Simple Test");
   if (! mpr.begin()) {
     Serial.println("Failed to communicate with MPRLS sensor, check wiring?");
-    while (1) {
-      delay(10);
-    }
+    anyFailures = true;
   }
   Serial.println("Found MPRLS sensor");
+  */
 
   Serial.println(F("BMP280 test"));
   
   if (!bme.begin()) {  
     Serial.println("Could not find a valid BMP280 sensor, check wiring!");
-    while (1) {
-      delay(10);
-    }
+    anyFailures = true;
   }
   Serial.println("Found BMP280 sensor");
 
@@ -133,98 +346,48 @@ void setup() {
   // see if the card is present and can be initialized:
   if (!SD.begin(chipSelect)) {
     Serial.println("Card failed, or not present");
-    // don't do anything more:
-    while (1) {
-      delay(10);
-    }
+    anyFailures = true;
   }
   Serial.println("card initialized.");
-
-  /*
-   * In hindsight, this was a bad idea. I'll just use a real-time clock next time
-  // get last time from beginning of last line
-  File dataFile = SD.open(dataFileName, FILE_WRITE);
-  if (dataFile) {
-    Serial.println("reading " + dataFileName + " for old timestamp: ");
-    // last line shouldn't be more than 200 characters...
-    dataFile.seek(dataFile.size() - 10);
-    int lastLineIndex = dataFile.position();
-    int lastLastLineIndex = lastLineIndex;
-    while ( dataFile.available() ) {
-      if (dataFile.read() == '\n') {
-        lastLastLineIndex = lastLineIndex;
-        lastLineIndex = dataFile.position();
-      }
-      Serial.println(lastLineIndex);
-    }
-    delay(100);
-    // now we should be at the beginning of the last line...
-    Serial.println("lastLastLineIndex: " + lastLastLineIndex);
-    String lastTimeData = "";
-    dataFile.seek(lastLastLineIndex);
-    bool stopSearching = false;
-    delay(100);
-    Serial.println();
-    while(dataFile.available() && !stopSearching) {
-      String next = (String)dataFile.read();
-      //Serial.print(dataFile.position());
-      if (next != ',') {
-        lastTimeData += next;
-        Serial.print(next);
-      } else {
-        stopSearching = true;
-      }
-    }
-    dataFile.close();
-    delay(100);
-    Serial.println("Last Time Data: " + lastTimeData);
-    char tarray[sizeof(lastTimeData)];
-    lastTimeData.toCharArray(tarray, sizeof(tarray));
-    currentTime = atoi(tarray);  
+  
+  if (anyFailures) {
+    Serial.println("Failures in setup. Will try again later");
   } else {
-    Serial.println("No file matching name " + dataFileName + ", will be created later");
+    Serial.println("Setup successful! :)");
   }
-  */
+
+  delay(5000);
 }
 
 
 void loop() {
-  // update time
-  currentTime += (micros() - lastTime);
-  lastTime = currentTime;
-
+    
+  delay(2000);
+  unsigned long deltatMs = (micros()/1000 + startTime - lastTime);
   
+  // update time
+  currentTime += deltatMs;
+  lastTime = currentTime;
+  
+  //pressureMPRLS = mpr.readPressure();
+  Serial.println(bme.readPressure());
+  temperatureBMP = bme.readTemperature();
+  pressureBMP = bme.readPressure(); //convert to Pa
+  
+  
+  updateLowest();
+  updateEEPROMRecords();
+
   String dataString = "";
 
   dataString += (String)currentTime;
   dataString += ", ";
-  
-  float pressure_hPa = mpr.readPressure();
-  dataString += (String)pressure_hPa;
+  //dataString += (String)pressureMPRLS;
+  //dataString += ", ";
+  dataString += (String)pressureBMP;
   dataString += ", ";
-  dataString += (String)(bme.readPressure() / 100);
-  dataString += ", ";
-  dataString += (String)bme.readTemperature();
+  dataString += (String)temperatureBMP;
   dataString += ",\n";
-
-  /*
-  
-  Serial.print("Pressure (hPa): "); Serial.println(pressure_hPa);
-  //Serial.print("Pressure (PSI): "); Serial.println(pressure_hPa / 68.947572932);
-
-  Serial.print("Temperature = ");
-  Serial.print(bme.readTemperature());
-  Serial.println(" *C");
-  
-  Serial.print("Pressure = ");
-  Serial.print(bme.readPressure());
-  Serial.println(" Pa");
-
-  Serial.print("Approx altitude = ");
-  Serial.print(bme.readAltitude(1013.25)); // this should be adjusted to your local forecast
-  Serial.println(" m");
-
-  */
   
   // open the file. note that only one file can be open at a time,
   // so you have to close this one before opening another.
@@ -240,7 +403,18 @@ void loop() {
   // if the file isn't open, pop up an error:
   else {
     Serial.println("error opening " + dataFileName);
+    anyFailures = true;
   }
-  
-  delay(100);
+
+  anyFailures = true;
+
+  if (buttonState) {
+    Serial.println("button pressed");
+    disableLocationBuzzer = 1;
+  }
+
+  // update button state
+  buttonState = digitalRead(buttonPin);
+
+  doBuzzer();
 }
